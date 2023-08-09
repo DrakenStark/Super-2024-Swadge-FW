@@ -17,6 +17,7 @@
 #include "ext_leds.h"
 #include "ext_fuzzer.h"
 #include "ext_keymap.h"
+#include "ext_motion.h"
 #include "ext_modes.h"
 #include "ext_replay.h"
 
@@ -30,7 +31,8 @@
 
 static const emuExtension_t* registeredExtensions[] = {
     &touchEmuCallback,  &ledEmuExtension,   &fuzzerEmuExtension,
-    &keymapEmuCallback, &modesEmuExtension, &replayEmuExtension,
+    &keymapEmuCallback, &modesEmuExtension, &motionEmuExtension,
+    &replayEmuExtension,
 };
 
 //==============================================================================
