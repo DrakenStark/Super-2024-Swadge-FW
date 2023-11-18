@@ -16,16 +16,15 @@
 #include "graphicsTest.h"
 #include "jukebox.h"
 #include "lumberjack.h"
-#include "marbles.h"
 #include "mode_paint.h"
 #include "mode_platformer.h"
 #include "mode_ray.h"
 #include "paint_share.h"
-#include "pong.h"
 #include "pushy.h"
 #include "soko.h"
 #include "touchTest.h"
 #include "tunernome.h"
+#include "mode_credits.h"
 
 #include "settingsManager.h"
 
@@ -39,8 +38,12 @@ typedef struct
     menuLogbookRenderer_t* renderer;
     font_t logbook;
     song_t jingle;
+    song_t fanfare;
     int32_t lastBgmVol;
     int32_t lastSfxVol;
+    int32_t cheatCodeIdx;
+    bool debugMode;
+    bool fanfarePlaying;
 } mainMenu_t;
 
 //==============================================================================
@@ -57,7 +60,7 @@ static void mainMenuCb(const char* label, bool selected, uint32_t settingVal);
 //==============================================================================
 
 // It's good practice to declare immutable strings as const so they get placed in ROM, not RAM
-static const char mainMenuName[] = "MAIN MENU";
+static const char mainMenuName[] = "Main Menu";
 
 swadgeMode_t mainMenuMode = {
     .modeName                 = mainMenuName,
@@ -101,6 +104,10 @@ static const char* const screenSaverSettingsOptions[] = {
     "Off", "10s", "20s", "30s", "1m", "2m", "5m",
 };
 
+static const int16_t cheatCode[] = {
+    PB_UP, PB_UP, PB_DOWN, PB_DOWN, PB_LEFT, PB_RIGHT, PB_LEFT, PB_RIGHT, PB_B, PB_A, PB_START, PB_SELECT,
+};
+
 //==============================================================================
 // Functions
 //==============================================================================
@@ -118,6 +125,7 @@ static void mainMenuEnterMode(void)
 
     // Load a song for when the volume changes
     loadSong("jingle.sng", &mainMenu->jingle, false);
+    loadSong("item.sng", &mainMenu->fanfare, false);
 
     // Allocate the menu
     mainMenu->menu = initMenu(mainMenuName, mainMenuCb);
@@ -127,8 +135,6 @@ static void mainMenuEnterMode(void)
     addSingleItemToMenu(mainMenu->menu, breakoutMode.modeName);
     addSingleItemToMenu(mainMenu->menu, modePlatformer.modeName);
     addSingleItemToMenu(mainMenu->menu, lumberjackMode.modeName);
-    addSingleItemToMenu(mainMenu->menu, marblesMode.modeName);
-    addSingleItemToMenu(mainMenu->menu, pongMode.modeName);
     addSingleItemToMenu(mainMenu->menu, pushyMode.modeName);
     addSingleItemToMenu(mainMenu->menu, rayMode.modeName);
     addSingleItemToMenu(mainMenu->menu, sokoMode.modeName);
@@ -146,13 +152,7 @@ static void mainMenuEnterMode(void)
     addSingleItemToMenu(mainMenu->menu, modePaint.modeName);
     mainMenu->menu = endSubMenu(mainMenu->menu);
 
-    mainMenu->menu = startSubMenu(mainMenu->menu, "Tests");
-    addSingleItemToMenu(mainMenu->menu, accelTestMode.modeName);
-    addSingleItemToMenu(mainMenu->menu, demoMode.modeName);
-    addSingleItemToMenu(mainMenu->menu, touchTestMode.modeName);
-    addSingleItemToMenu(mainMenu->menu, factoryTestMode.modeName);
-    addSingleItemToMenu(mainMenu->menu, graphicsTestMode.modeName);
-    mainMenu->menu = endSubMenu(mainMenu->menu);
+    addSingleItemToMenu(mainMenu->menu, modeCredits.modeName);
 
     // Start a submenu for settings
     mainMenu->menu = startSubMenu(mainMenu->menu, settingsLabel);
@@ -172,6 +172,9 @@ static void mainMenuEnterMode(void)
                                  getScreensaverTimeSettingBounds(), getScreensaverTimeSetting());
     // End the submenu for settings
     mainMenu->menu = endSubMenu(mainMenu->menu);
+
+    // Show the battery on the main menu
+    setShowBattery(mainMenu->menu, true);
 
     // Initialize menu renderer
     mainMenu->renderer = initMenuLogbookRenderer(&mainMenu->logbook);
@@ -193,6 +196,7 @@ static void mainMenuExitMode(void)
 
     // Free the song
     freeSong(&mainMenu->jingle);
+    freeSong(&mainMenu->fanfare);
 
     // Free mode memory
     free(mainMenu);
@@ -209,6 +213,48 @@ static void mainMenuMainLoop(int64_t elapsedUs)
     buttonEvt_t evt = {0};
     while (checkButtonQueueWrapper(&evt))
     {
+        if ((!mainMenu->debugMode) && (evt.down))
+        {
+            if (evt.button == cheatCode[mainMenu->cheatCodeIdx])
+            {
+                mainMenu->cheatCodeIdx++;
+
+                if (mainMenu->cheatCodeIdx >= ARRAY_SIZE(cheatCode))
+                {
+                    mainMenu->cheatCodeIdx = 0;
+                    mainMenu->debugMode    = true;
+                    bzrPlayBgm(&mainMenu->fanfare, BZR_STEREO);
+                    mainMenu->fanfarePlaying = true;
+
+                    // Return to the top level menu
+                    while (mainMenu->menu->parentMenu)
+                    {
+                        mainMenu->menu = mainMenu->menu->parentMenu;
+                    }
+
+                    // Add the tests menu
+                    mainMenu->menu = startSubMenu(mainMenu->menu, "Tests");
+                    addSingleItemToMenu(mainMenu->menu, accelTestMode.modeName);
+                    addSingleItemToMenu(mainMenu->menu, demoMode.modeName);
+                    addSingleItemToMenu(mainMenu->menu, touchTestMode.modeName);
+                    addSingleItemToMenu(mainMenu->menu, graphicsTestMode.modeName);
+                    addSingleItemToMenu(mainMenu->menu, factoryTestMode.modeName);
+                    mainMenu->menu = endSubMenu(mainMenu->menu);
+
+                    return;
+                }
+
+                // Do not forward the A or START in the cheat code to the rest of the mode
+                if (evt.button == PB_A || evt.button == PB_B)
+                {
+                    return;
+                }
+            }
+            else
+            {
+                mainMenu->cheatCodeIdx = 0;
+            }
+        }
         mainMenu->menu = menuButton(mainMenu->menu, evt);
     }
 
@@ -228,8 +274,11 @@ static void mainMenuCb(const char* label, bool selected, uint32_t settingVal)
     // Stop the buzzer first no matter what, so that it turns off
     // if we scroll away from the BGM or SFX settings.
 
-    // Always stop the buzzer unless we're on one of the SFX settings
-    bzrStop(true);
+    // Stop the buzzer when changing volume, not for fanfare
+    if (false == mainMenu->fanfarePlaying)
+    {
+        bzrStop(true);
+    }
 
     if (selected)
     {
@@ -274,10 +323,6 @@ static void mainMenuCb(const char* label, bool selected, uint32_t settingVal)
         {
             switchToSwadgeMode(&lumberjackMode);
         }
-        else if (label == marblesMode.modeName)
-        {
-            switchToSwadgeMode(&marblesMode);
-        }
         else if (label == modePaint.modeName)
         {
             switchToSwadgeMode(&modePaint);
@@ -285,10 +330,6 @@ static void mainMenuCb(const char* label, bool selected, uint32_t settingVal)
         else if (label == modePlatformer.modeName)
         {
             switchToSwadgeMode(&modePlatformer);
-        }
-        else if (label == pongMode.modeName)
-        {
-            switchToSwadgeMode(&pongMode);
         }
         else if (label == pushyMode.modeName)
         {
@@ -310,6 +351,10 @@ static void mainMenuCb(const char* label, bool selected, uint32_t settingVal)
         {
             switchToSwadgeMode(&tunernomeMode);
         }
+        else if (label == modeCredits.modeName)
+        {
+            switchToSwadgeMode(&modeCredits);
+        }
     }
     else
     {
@@ -329,6 +374,7 @@ static void mainMenuCb(const char* label, bool selected, uint32_t settingVal)
                 mainMenu->lastBgmVol = settingVal;
                 setBgmVolumeSetting(settingVal);
                 bzrPlayBgm(&mainMenu->jingle, BZR_STEREO);
+                mainMenu->fanfarePlaying = false;
             }
         }
         else if (sfxVolSettingLabel == label)
@@ -338,6 +384,7 @@ static void mainMenuCb(const char* label, bool selected, uint32_t settingVal)
                 mainMenu->lastSfxVol = settingVal;
                 setSfxVolumeSetting(settingVal);
                 bzrPlaySfx(&mainMenu->jingle, BZR_STEREO);
+                mainMenu->fanfarePlaying = false;
             }
         }
         else if (micSettingLabel == label)

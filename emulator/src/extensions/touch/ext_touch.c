@@ -67,6 +67,7 @@ static void calculateTouch(int32_t x, int32_t y, int32_t* angle, int32_t* radius
 static bool updateTouch(int32_t x, int32_t y, bool clicked);
 
 static bool touchInit(emuArgs_t* emuArgs);
+static int32_t touchKey(uint32_t key, bool down);
 static bool touchMouseMove(int32_t x, int32_t y, mouseButton_t buttonMask);
 static bool touchMouseButton(int32_t x, int32_t y, mouseButton_t button, bool down);
 static void touchRender(uint32_t winW, uint32_t winH, const emuPane_t* pane, uint8_t numPanes);
@@ -87,10 +88,11 @@ typedef struct
     int32_t lastHoverX;
     int32_t lastHoverY;
 
+    uint32_t keyState;
+
     int32_t lastTouchPhi;
     int32_t lastTouchRadius;
     int32_t lastTouchIntensity;
-    buttonBit_t lastTouchButtons;
 
     uint32_t paneX;
     uint32_t paneY;
@@ -107,7 +109,7 @@ emuExtension_t touchEmuCallback = {
     .fnInitCb        = touchInit,
     .fnPreFrameCb    = NULL,
     .fnPostFrameCb   = NULL,
-    .fnKeyCb         = NULL,
+    .fnKeyCb         = touchKey,
     .fnMouseMoveCb   = touchMouseMove,
     .fnMouseButtonCb = touchMouseButton,
     .fnRenderCb      = touchRender,
@@ -227,11 +229,12 @@ static bool updateTouch(int32_t x, int32_t y, bool clicked)
 }
 
 /**
- * @brief Initializes the touchpad extension.
+ * @brief Initializes the touchpad extension. If emulateTouch is enabled, the touchpad will display.
+ *
+ * Using keys 1-4 to control the touchpad 1-4 is always enabled.
  *
  * @param emuArgs
- * @return true
- * @return false
+ * @return true If touchpad emulation is enabled (it is)
  */
 static bool touchInit(emuArgs_t* emuArgs)
 {
@@ -246,12 +249,71 @@ static bool touchInit(emuArgs_t* emuArgs)
     if (emuArgs->emulateTouch)
     {
         requestPane(&touchEmuCallback, PANE_BOTTOM, PANE_MIN_SIZE, PANE_MIN_SIZE);
-        return true;
     }
-    else
+
+    return true;
+}
+
+static int32_t touchKey(uint32_t key, bool down)
+{
+    // Map from state to touchpad rotation. Button bits are in URLD order
+    const int32_t phiMap[] = {
+        0,   // 0b0000 ____ (0 radius)
+        270, // 0b0001 ___D
+        180, // 0b0010 __L_
+        225, // 0b0011 __LD
+        0,   // 0b0100 _R__
+        315, // 0b0101 _R_D
+        0,   // 0b0110 _RL_ (0 radius)
+        270, // 0b0111 _RLD
+        90,  // 0b1000 U___
+        0,   // 0b1001 U__D (0 radius)
+        135, // 0b1010 U_L_
+        180, // 0b1011 U_LD
+        45,  // 0b1100 UR__
+        0,   // 0b1101 UR_D
+        90,  // 0b1110 URL_
+        0,   // 0b1111 URLD (0 radius)
+    };
+
+    if (key < '1' || key > '4')
     {
-        return false;
+        // Do not consume event, we only want 1 to 4
+        return 0;
     }
+
+    int keyNum = (3 - (key - '1'));
+    // Handle the key states separately so rolling over them works more or less how one might expect
+    if (down && !(emuTouch.keyState & (1 << keyNum)))
+    {
+        emuTouch.keyState |= (1 << keyNum);
+    }
+    else if (!down && (emuTouch.keyState & (1 << keyNum)))
+    {
+        emuTouch.keyState &= ~(1 << keyNum);
+    }
+
+    int32_t radius    = 1024;
+    int32_t intensity = emuTouch.lastTouchIntensity;
+    // Check for the canceled-out positions where
+    switch (emuTouch.keyState)
+    {
+        case 0:  // All un-pressed
+        case 6:  // LR pressed
+        case 9:  // UD pressed
+        case 15: // All pressed
+            radius    = 0;
+            intensity = 0;
+            break;
+
+        default:
+            break;
+    }
+
+    emulatorSetTouchJoystick(phiMap[emuTouch.keyState], radius, intensity);
+
+    // Consume event
+    return -1;
 }
 
 static bool touchMouseMove(int32_t x, int32_t y, mouseButton_t buttonMask)
